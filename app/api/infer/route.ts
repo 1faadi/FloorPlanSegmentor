@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import fs from 'node:fs/promises'
-import fssync from 'node:fs'
-import path from 'node:path'
 import crypto from 'node:crypto'
 import sharp from 'sharp'
+import { put } from '@vercel/blob'
 
 const API_URL = 'https://serverless.roboflow.com'
 const API_KEY = 'lrUs6QO2wCtJ0gJQ3NY8' // do not ship to client; server route only
@@ -62,10 +60,8 @@ export async function POST(req: NextRequest) {
   const bytes = Buffer.from(await file.arrayBuffer())
   const base64 = bytes.toString('base64')
 
-  // temp workspace
+  // workspace identifier used as blob prefix
   const runId = crypto.randomBytes(8).toString('hex')
-  const outDir = path.join(process.cwd(), 'public', 'runs', runId)
-  await fs.mkdir(outDir, { recursive: true })
 
   // call Roboflow
   const url = `${API_URL}/${modelId}`
@@ -90,9 +86,11 @@ export async function POST(req: NextRequest) {
   const roomBoxes = boxes.filter(b => b.label.toLowerCase() === 'room')
   const roomNms = nms(roomBoxes, 0.5)
 
-  // Save original upload for viewing
-  const originalPath = path.join(outDir, 'original.jpg')
-  await fs.writeFile(originalPath, new Uint8Array(bytes))
+  // Save original upload to Blob
+  const originalPut = await put(`runs/${runId}/original.jpg`, bytes, {
+    access: 'public',
+    contentType: 'image/jpeg',
+  })
 
   // Draw boxes onto a copy and save; also create room crops
   const img = sharp(bytes)
@@ -110,12 +108,16 @@ export async function POST(req: NextRequest) {
   })
   const svg = Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${rects.join('')}</svg>`)
   const boxesBuf = await sharp(bytes).composite([{ input: svg, top: 0, left: 0 }]).png().toBuffer()
-  const boxesPath = path.join(outDir, 'boxes.png')
-  await fs.writeFile(boxesPath, new Uint8Array(boxesBuf))
+  const boxesPut = await put(`runs/${runId}/boxes.png`, boxesBuf, {
+    access: 'public',
+    contentType: 'image/png',
+  })
 
   // Overlay: draw semi transparent polygons if present (simple: just copy original for now)
-  const overlayPath = path.join(outDir, 'overlay.png')
-  await fs.writeFile(overlayPath, new Uint8Array(bytes))
+  const overlayPut = await put(`runs/${runId}/overlay.png`, bytes, {
+    access: 'public',
+    contentType: 'image/png',
+  })
 
   const roomCropUrls: string[] = []
   for (let i = 0; i < roomNms.length; i++) {
@@ -127,22 +129,25 @@ export async function POST(req: NextRequest) {
     if (ix1 > ix0 && iy1 > iy0) {
       const crop = await sharp(bytes).extract({ left: ix0, top: iy0, width: ix1 - ix0, height: iy1 - iy0 }).png().toBuffer()
       const cropName = `room_${String(i+1).padStart(3,'0')}.png`
-      await fs.writeFile(path.join(outDir, cropName), new Uint8Array(crop))
-      roomCropUrls.push(`/runs/${runId}/${cropName}`)
+      const cropPut = await put(`runs/${runId}/${cropName}`, crop, {
+        access: 'public',
+        contentType: 'image/png',
+      })
+      roomCropUrls.push(cropPut.url)
     }
   }
 
   const counts = { room: roomNms.length }
 
-  const overlayUrl = `/runs/${runId}/overlay.png`
-  const boxesUrl = `/runs/${runId}/boxes.png`
+  const overlayUrl = overlayPut.url
+  const boxesUrl = boxesPut.url
 
   return NextResponse.json({
     counts,
     predictions: data,
     boxes,
     roomNms: roomNms,
-    originalUrl: `/runs/${runId}/original.jpg`,
+    originalUrl: originalPut.url,
     overlayUrl,
     boxesUrl,
     roomCropUrls,

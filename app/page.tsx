@@ -95,9 +95,16 @@ export default function Page() {
     fd.append('image', file)
     fd.append('modelId', modelId)
     const res = await fetch('/api/infer', { method: 'POST', body: fd })
-    const data = await res.json()
+    let data: any = null
+    let parseError: string | null = null
+    try {
+      data = await res.json()
+    } catch {
+      const text = await res.text().catch(() => '')
+      parseError = text || 'Empty response body'
+    }
     if (!res.ok) {
-      setError(data?.error || 'Request failed')
+      setError(data?.error || parseError || 'Request failed')
     } else {
       setError(null)
       setResult(data)

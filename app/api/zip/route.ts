@@ -1,7 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import fs from 'node:fs/promises'
-import fssync from 'node:fs'
-import path from 'node:path'
+import { list } from '@vercel/blob'
 // archiver lacks types in some setups; import as any to avoid TS errors
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const archiver: any = require('archiver')
@@ -20,30 +18,34 @@ export async function POST(req: NextRequest) {
     }
     if (!runId) return NextResponse.json({ error: 'runId required' }, { status: 400 })
 
-    const runDir = path.join(process.cwd(), 'public', 'runs', runId)
-    const exists = fssync.existsSync(runDir)
-    if (!exists) return NextResponse.json({ error: 'run not found' }, { status: 404 })
+    // List blobs for this run
+    const { blobs } = await list({ prefix: `runs/${runId}/` })
+    const cropBlobs = blobs.filter(b => /\/room_\d+\.png$/i.test(b.pathname))
+    if (cropBlobs.length === 0) {
+      return NextResponse.json({ error: 'no crops found' }, { status: 404 })
+    }
 
-    const zipPath = path.join(runDir, 'crops.zip')
-    await new Promise<void>((resolve, reject) => {
-      const output = fssync.createWriteStream(zipPath)
-      const archive = archiver('zip', { zlib: { level: 9 } })
-      output.on('close', () => resolve())
-      archive.on('error', reject)
-      archive.pipe(output)
-      // add room crops only
-      const files = fssync.readdirSync(runDir)
-      for (const f of files) {
-        if (/^room_\d+\.png$/i.test(f)) {
-          archive.file(path.join(runDir, f), { name: f })
-        }
+    // Create a zip archive in-memory and stream to response
+    const archive = archiver('zip', { zlib: { level: 9 } })
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        archive.on('data', (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)))
+        archive.on('end', () => controller.close())
+        archive.on('error', (err: Error) => controller.error(err))
       }
-      archive.finalize()
     })
 
-    const file = await fs.readFile(zipPath)
-    // Return as Uint8Array to satisfy BodyInit types
-    return new NextResponse(new Uint8Array(file), {
+    // Fetch each blob and append
+    await Promise.all(cropBlobs.map(async (b) => {
+      const resp = await fetch(b.url, { cache: 'no-store' })
+      if (!resp.ok) return
+      const buf = new Uint8Array(await resp.arrayBuffer())
+      archive.append(Buffer.from(buf), { name: b.pathname.split('/').pop() })
+    }))
+    archive.finalize()
+
+    return new NextResponse(stream as any, {
       headers: {
         'Content-Type': 'application/zip',
         'Content-Disposition': `attachment; filename="room_crops_${runId}.zip"`

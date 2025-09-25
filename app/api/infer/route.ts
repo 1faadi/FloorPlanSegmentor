@@ -1,8 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server'
-import fs from 'node:fs/promises'
-import fssync from 'node:fs'
-import path from 'node:path'
-import crypto from 'node:crypto'
 import sharp from 'sharp'
 
 const API_URL = 'https://serverless.roboflow.com'
@@ -61,11 +57,7 @@ export async function POST(req: NextRequest) {
 
   const bytes = Buffer.from(await file.arrayBuffer())
   const base64 = bytes.toString('base64')
-
-  // temp workspace
-  const runId = crypto.randomBytes(8).toString('hex')
-  const outDir = path.join(process.cwd(), 'public', 'runs', runId)
-  await fs.mkdir(outDir, { recursive: true })
+  const mimeType = file.type || 'image/jpeg'
 
   // call Roboflow
   const url = `${API_URL}/${modelId}`
@@ -90,9 +82,8 @@ export async function POST(req: NextRequest) {
   const roomBoxes = boxes.filter(b => b.label.toLowerCase() === 'room')
   const roomNms = nms(roomBoxes, 0.5)
 
-  // Save original upload for viewing
-  const originalPath = path.join(outDir, 'original.jpg')
-  await fs.writeFile(originalPath, new Uint8Array(bytes))
+  // Prepare original image data URL
+  const originalDataUrl = `data:${mimeType};base64,${base64}`
 
   // Draw boxes onto a copy and save; also create room crops
   const img = sharp(bytes)
@@ -110,14 +101,12 @@ export async function POST(req: NextRequest) {
   })
   const svg = Buffer.from(`<svg width="${width}" height="${height}" xmlns="http://www.w3.org/2000/svg">${rects.join('')}</svg>`)
   const boxesBuf = await sharp(bytes).composite([{ input: svg, top: 0, left: 0 }]).png().toBuffer()
-  const boxesPath = path.join(outDir, 'boxes.png')
-  await fs.writeFile(boxesPath, new Uint8Array(boxesBuf))
+  const boxesDataUrl = `data:image/png;base64,${boxesBuf.toString('base64')}`
 
-  // Overlay: draw semi transparent polygons if present (simple: just copy original for now)
-  const overlayPath = path.join(outDir, 'overlay.png')
-  await fs.writeFile(overlayPath, new Uint8Array(bytes))
+  // Overlay: for now simply use original image
+  const overlayDataUrl = originalDataUrl
 
-  const roomCropUrls: string[] = []
+  const roomCrops: { name: string, dataUrl: string }[] = []
   for (let i = 0; i < roomNms.length; i++) {
     const [x0, y0, x1, y1] = roomNms[i].bbox
     const ix0 = Math.max(0, Math.round(x0))
@@ -127,26 +116,21 @@ export async function POST(req: NextRequest) {
     if (ix1 > ix0 && iy1 > iy0) {
       const crop = await sharp(bytes).extract({ left: ix0, top: iy0, width: ix1 - ix0, height: iy1 - iy0 }).png().toBuffer()
       const cropName = `room_${String(i+1).padStart(3,'0')}.png`
-      await fs.writeFile(path.join(outDir, cropName), new Uint8Array(crop))
-      roomCropUrls.push(`/runs/${runId}/${cropName}`)
+      roomCrops.push({ name: cropName, dataUrl: `data:image/png;base64,${crop.toString('base64')}` })
     }
   }
 
   const counts = { room: roomNms.length }
-
-  const overlayUrl = `/runs/${runId}/overlay.png`
-  const boxesUrl = `/runs/${runId}/boxes.png`
 
   return NextResponse.json({
     counts,
     predictions: data,
     boxes,
     roomNms: roomNms,
-    originalUrl: `/runs/${runId}/original.jpg`,
-    overlayUrl,
-    boxesUrl,
-    roomCropUrls,
-    runId
+    originalDataUrl,
+    overlayDataUrl,
+    boxesDataUrl,
+    roomCrops
   })
 }
 

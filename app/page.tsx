@@ -83,7 +83,7 @@ export default function Page() {
     }
     img.onload = draw
     if (img.complete) draw()
-    img.src = result.originalUrl
+    img.src = result.originalDataUrl
   }, [result, showOverlay, showBoxes, onlyRooms, palette])
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -112,6 +112,21 @@ export default function Page() {
     document.body.appendChild(a)
     a.click()
     a.remove()
+  }
+
+  async function downloadRoomCropsZip() {
+    if (!result?.roomCrops?.length) return
+    const { default: JSZip } = await import('jszip')
+    const zip = new JSZip()
+    for (const rc of result.roomCrops as { name: string, dataUrl: string }[]) {
+      // dataURL -> base64 payload
+      const base64 = rc.dataUrl.split(',')[1] || ''
+      zip.file(rc.name, base64, { base64: true })
+    }
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const url = URL.createObjectURL(blob)
+    triggerDownload(url, 'room_crops.zip')
+    URL.revokeObjectURL(url)
   }
 
   return (
@@ -176,13 +191,10 @@ export default function Page() {
             </div>
             <div className="flex flex-wrap gap-3 mt-4">
               <Button variant="default" size="sm" className="min-w-[180px]"
-                onClick={() => triggerDownload(result.overlayUrl, 'overlay.png')}>Download overlay</Button>
+                onClick={() => triggerDownload(result.overlayDataUrl, 'overlay.png')}>Download overlay</Button>
               <Button variant="default" size="sm" className="min-w-[180px]"
-                onClick={() => triggerDownload(result.boxesUrl, 'boxes.png')}>Download boxes</Button>
-              <form method="POST" action="/api/zip">
-                <input type="hidden" name="runId" value={result.runId} />
-                <Button type="submit" size="sm" className="min-w-[220px]">Download room crops (ZIP)</Button>
-              </form>
+                onClick={() => triggerDownload(result.boxesDataUrl, 'boxes.png')}>Download boxes</Button>
+              <Button type="button" size="sm" className="min-w-[220px]" onClick={downloadRoomCropsZip}>Download room crops (ZIP)</Button>
             </div>
           </CardContent>
         </Card>
